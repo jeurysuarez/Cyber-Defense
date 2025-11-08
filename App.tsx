@@ -460,12 +460,11 @@ const App: React.FC = () => {
             }
         }
         
-        // --- Collision Detection ---
+        // --- Collision Detection with platforms/firewalls ---
         levelEntities.forEach(entity => {
             if (entity.type !== 'platform' && entity.type !== 'firewall') return;
             if (entity.type === 'firewall' && !entity.activated) return;
 
-            // Simple AABB collision detection
             if (newPlayerState.x < entity.x + entity.width &&
                 newPlayerState.x + PLAYER_WIDTH > entity.x &&
                 newPlayerState.y < entity.y + entity.height &&
@@ -481,15 +480,14 @@ const App: React.FC = () => {
                     const overlapYAmount = combinedHalfHeights - Math.abs(overlapY);
                     
                     if (overlapYAmount < overlapXAmount) {
-                         if (overlapY > 0) { // Collision from top
+                         if (overlapY > 0 && newPlayerState.vy < 0) { // Collision from top
                             newPlayerState.y = entity.y + entity.height;
                             newPlayerState.vy = 0;
                             
-                             // Powerup Box Hit
-                            if(entity.type === 'platform' && levelEntities.some(p => p.type === 'powerupBox' && !p.activated && newPlayerState.x < p.x + p.width && newPlayerState.x + PLAYER_WIDTH > p.x && newPlayerState.y < p.y + p.height + 10 && newPlayerState.y > p.y)) {
-                                const box = levelEntities.find(p => p.type === 'powerupBox' && !p.activated && newPlayerState.x < p.x + p.width && newPlayerState.x + PLAYER_WIDTH > p.x && newPlayerState.y < p.y + p.height + 10 && newPlayerState.y > p.y);
-                                if (box) {
-                                    setLevelEntities(prev => prev.map(e => e.id === box.id ? {...e, activated: true} : e));
+                            if(entity.type === 'platform') { // Check for powerup box hit
+                                const box = levelEntities.find(p => p.type === 'powerupBox' && !p.activated && newPlayerState.x < p.x + p.width && newPlayerState.x + PLAYER_WIDTH > p.x && p.y > entity.y && Math.abs((newPlayerState.y - PLAYER_HEIGHT) - p.y) < 50);
+                                if (box && newPlayerState.y > box.y + box.height) { // Ensure player is below the box
+                                     setLevelEntities(prev => prev.map(e => e.id === box.id ? {...e, activated: true} : e));
                                     setParticleEffects(prev => [...prev, { id: Date.now(), x: box.x + box.width / 2, y: box.y + box.height / 2 }]);
                                     
                                     if(box.id === 201) newPlayerState.hasWeapon = true;
@@ -523,25 +521,46 @@ const App: React.FC = () => {
             newPlayerState.invincible = false;
         }
 
+        const takeDamage = () => {
+            if (newPlayerState.invincible) return;
+            newPlayerState.lives -= 1;
+            newPlayerState.invincible = true;
+            newPlayerState.invincibleTimer = 120; // 2 seconds of invincibility after hit
+            if (newPlayerState.lives <= 0) {
+                setGameState('dead');
+            }
+        };
 
-        // --- Update player state ---
-        setPlayerState(newPlayerState);
-
-        // --- Enemy Logic ---
+        // --- Enemy Logic and Collision ---
         const newLevelEntities = levelEntities.map(entity => {
+            let newEntity = {...entity};
+            if (entity.type === 'enemy' || entity.type === 'boss' || entity.type === 'spambot') {
+                // Player-Enemy collision
+                if (newPlayerState.x < entity.x + entity.width &&
+                    newPlayerState.x + PLAYER_WIDTH > entity.x &&
+                    newPlayerState.y < entity.y + entity.height &&
+                    newPlayerState.y + PLAYER_HEIGHT > entity.y) {
+                    takeDamage();
+                }
+            }
+
             if (entity.type === 'enemy' && entity.variant === 'mini-virus') {
-                let newEntity = {...entity};
                 newEntity.x += newEntity.direction! * 2;
                 if (newEntity.x < newEntity.patrolStart! || newEntity.x + newEntity.width > newEntity.patrolEnd!) {
                     newEntity.direction = -newEntity.direction!;
                 }
-                return newEntity;
+            }
+            if (entity.type === 'spambot') {
+                 if (!spambotCooldowns.current[entity.id] && Math.abs((playerState.x + PLAYER_WIDTH/2) - (entity.x + entity.width/2)) < 400 ) {
+                    setEnemyProjectiles(prev => [...prev, {id: Date.now(), x: entity.x + entity.width/2, y: entity.y + entity.height / 2, vx: playerState.x < entity.x ? -PROJECTILE_SPEED/2 : PROJECTILE_SPEED/2, vy: 0}]);
+                    spambotCooldowns.current[entity.id] = true;
+                    setTimeout(() => { spambotCooldowns.current[entity.id] = false; }, 2000);
+                }
             }
             if (entity.type === 'boss') {
-                let newEntity = {...entity};
                 const playerCenterY = newPlayerState.y + PLAYER_HEIGHT / 2;
-                if (playerCenterY < newEntity.y + newEntity.height / 2) newEntity.y -= 2;
-                if (playerCenterY > newEntity.y + newEntity.height / 2) newEntity.y += 2;
+                if (playerCenterY < newEntity.y + newEntity.height / 2) newEntity.y -= 1;
+                if (playerCenterY > newEntity.y + newEntity.height / 2) newEntity.y += 1;
                 
                  if (!spambotCooldowns.current[entity.id]) {
                     setEnemyProjectiles(prev => [...prev, {id: Date.now(), x: entity.x, y: entity.y + entity.height / 2, vx: -PROJECTILE_SPEED, vy: (Math.random() - 0.5) * 4}]);
@@ -549,4 +568,161 @@ const App: React.FC = () => {
                     setTimeout(() => { spambotCooldowns.current[entity.id] = false; }, 1500);
                 }
             }
-            
+            return newEntity;
+        }).filter(e => e.health === undefined || e.health > 0);
+        
+        // --- Projectile Logic ---
+        const updatedProjectiles = projectiles.map(p => ({...p, x: p.x + p.vx})).filter(p => p.x < LEVEL_WIDTH && p.x > 0);
+        const updatedEnemyProjectiles = enemyProjectiles.map(p => ({...p, x: p.x + p.vx})).filter(p => p.x < LEVEL_WIDTH && p.x > 0);
+
+        let projectilesToRemove: number[] = [];
+        let enemiesToRemove: number[] = [];
+        let bossDamage = 0;
+
+        updatedProjectiles.forEach(p => {
+            newLevelEntities.forEach(e => {
+                if ((e.type === 'enemy' || e.type === 'spambot' || e.type === 'boss') && p.x < e.x + e.width && p.x + 15 > e.x && p.y < e.y + e.height && p.y + 15 > e.y) {
+                    projectilesToRemove.push(p.id);
+                    if (e.type === 'boss') {
+                        bossDamage++;
+                    } else {
+                        enemiesToRemove.push(e.id);
+                    }
+                    setParticleEffects(prev => [...prev, { id: Date.now(), x: p.x, y: p.y }]);
+                }
+            });
+        });
+        
+        updatedEnemyProjectiles.forEach(p => {
+             if (p.x < newPlayerState.x + PLAYER_WIDTH && p.x + 15 > newPlayerState.x && p.y < newPlayerState.y + PLAYER_HEIGHT && p.y + 15 > newPlayerState.y) {
+                projectilesToRemove.push(p.id);
+                takeDamage();
+            }
+        });
+        
+        const finalEntities = newLevelEntities.filter(e => !enemiesToRemove.includes(e.id)).map(e => {
+            if (e.type === 'boss' && bossDamage > 0) {
+                const newHealth = e.health! - bossDamage;
+                if (newHealth <= 0) {
+                    setGameState('levelComplete');
+                    return {...e, health: 0};
+                }
+                return {...e, health: newHealth};
+            }
+            return e;
+        });
+
+        setProjectiles(updatedProjectiles.filter(p => !projectilesToRemove.includes(p.id)));
+        setEnemyProjectiles(updatedEnemyProjectiles.filter(p => !projectilesToRemove.includes(p.id)));
+        setLevelEntities(finalEntities);
+
+        // --- Interactive Objects Logic ---
+        finalEntities.forEach(entity => {
+            if (entity.type === 'console' && !entity.activated) {
+                if (newPlayerState.x < entity.x + entity.width && newPlayerState.x + PLAYER_WIDTH > entity.x && keys['e']) {
+                    setLevelEntities(prev => prev.map(e => {
+                        if (e.id === entity.id) return {...e, activated: true};
+                        if (e.id === entity.linkedId) return {...e, activated: false};
+                        return e;
+                    }));
+                    checkAndTriggerMentorMessage(true, 6);
+                }
+            }
+            if (entity.type === 'log' && !entity.activated) {
+                 if (newPlayerState.x < entity.x + entity.width && newPlayerState.x + PLAYER_WIDTH > entity.x) {
+                     setLevelEntities(prev => prev.map(e => e.id === entity.id ? {...e, activated: true} : e));
+                     checkAndTriggerMentorMessage(true, 4);
+                 }
+            }
+        });
+
+        // --- Update player state ---
+        setPlayerState(newPlayerState);
+
+        // --- Update Camera ---
+        const targetCameraX = newPlayerState.x - GAME_WIDTH / 2;
+        const newCameraX = Math.max(0, Math.min(LEVEL_WIDTH - GAME_WIDTH, targetCameraX));
+        setCameraX(newCameraX);
+
+        // --- Mentor Messages ---
+        checkAndTriggerMentorMessage(newPlayerState.x > 50, 1);
+        checkAndTriggerMentorMessage(newPlayerState.x > 400, 2);
+        checkAndTriggerMentorMessage(newPlayerState.x > 200, 3);
+        checkAndTriggerMentorMessage(newPlayerState.x > 1600, 5);
+        checkAndTriggerMentorMessage(newPlayerState.x > BOSS_ARENA_START - 200, 7);
+
+         // --- Particle effects cleanup ---
+        if (particleEffects.length > 0) {
+            setTimeout(() => {
+                setParticleEffects(prev => prev.slice(1));
+            }, 500);
+        }
+
+    }, [gameState, playerState, keys, levelEntities, projectiles, enemyProjectiles, checkAndTriggerMentorMessage, particleEffects.length]);
+
+    useGameLoop(gameLogic);
+
+    const boss = levelEntities.find(e => e.type === 'boss');
+
+    const renderGameScreen = () => (
+        <div
+            className="relative w-full h-full overflow-hidden bg-black"
+            style={{ transform: `translateX(-${cameraX}px)` }}
+        >
+            <GameBackground cameraX={cameraX} />
+            <Player x={playerState.x} y={playerState.y} invincible={playerState.invincible} />
+            {levelEntities.map(entity => (
+                <LevelEntity key={entity.id} entity={entity} />
+            ))}
+            {projectiles.map(p => <ProjectileComponent key={p.id} projectile={p} />)}
+            {enemyProjectiles.map(p => <ProjectileComponent key={p.id} projectile={p} />)}
+            {particleEffects.map(p => <ParticleEffect key={p.id} x={p.x} y={p.y} />)}
+        </div>
+    );
+
+    return (
+        <div className="w-screen h-screen flex justify-center items-center bg-gray-900">
+            <div
+                className="relative bg-gray-900 overflow-hidden"
+                style={{ width: GAME_WIDTH, height: GAME_HEIGHT }}
+            >
+                {gameState !== 'start' && (
+                    <UI 
+                        lives={playerState.lives} 
+                        hasShield={playerState.hasShield}
+                        hasWeapon={playerState.hasWeapon}
+                        invincible={playerState.invincible}
+                        message={currentMessage}
+                        bossHealth={boss ? boss.health! : null}
+                        bossMaxHealth={boss ? boss.maxHealth! : null}
+                    />
+                )}
+                
+                {gameState === 'start' && <StartScreen onStart={() => setGameState('playing')} />}
+                {gameState === 'playing' && renderGameScreen()}
+                {gameState === 'dead' && <EndScreen onRestart={resetGame} />}
+                {gameState === 'levelComplete' && <LevelCompleteScreen onRestart={resetGame} />}
+
+            </div>
+        </div>
+    );
+};
+
+interface GameScreenProps {
+  cameraX: number;
+  children: React.ReactNode;
+}
+
+const GameScreen: React.FC<GameScreenProps> = ({ cameraX, children }) => (
+  <div
+    className="relative w-full h-full overflow-hidden bg-black"
+    style={{
+      width: `${LEVEL_WIDTH}px`,
+      transform: `translateX(-${cameraX}px)`,
+    }}
+  >
+    {children}
+  </div>
+);
+
+export default App;
