@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 // --- TYPE DEFINITIONS ---
@@ -7,28 +8,41 @@ interface PlayerState {
   vx: number;
   vy: number;
   onGround: boolean;
-  lives: number;
-  hasShield: boolean;
+  direction: 'left' | 'right';
   hasWeapon: boolean;
-  invincible: boolean;
+  hasShield: boolean;
+  isInvincible: boolean;
   invincibleTimer: number;
 }
 
-interface LevelEntityObject {
+interface EnemyObject {
   id: number;
-  type: 'platform' | 'enemy' | 'powerupBox' | 'firewall' | 'console' | 'log' | 'boss' | 'spambot';
-  variant?: 'mini-virus';
+  type: 'Mini-Virus' | 'Spam-bot' | 'The Adware King';
   x: number;
   y: number;
   width: number;
   height: number;
-  patrolStart?: number;
-  patrolEnd?: number;
-  direction?: number;
-  activated?: boolean;
-  linkedId?: number;
+  patrolStart: number;
+  patrolEnd: number;
+  vx: number;
+  // FIX: Added 'up' and 'down' to the direction type to support the Adware King's movement.
+  direction: 'left' | 'right' | 'up' | 'down';
+  shootCooldown?: number;
   health?: number;
   maxHealth?: number;
+}
+
+interface LevelEntityObject {
+  id: number;
+  type: 'platform' | 'power-up-box' | 'firewall' | 'console' | 'log' | 'goal';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  hit?: boolean;
+  linkedElementId?: number;
+  active?: boolean;
+  collected?: boolean;
 }
 
 interface Projectile {
@@ -36,693 +50,681 @@ interface Projectile {
   x: number;
   y: number;
   vx: number;
-  vy: number;
-  type: 'player' | 'enemy';
+  owner: 'player' | 'enemy';
 }
 
-interface ParticleEffect {
-    id: number;
-    x: number;
-    y: number;
-}
-
-interface MentorMessage {
+interface Particle {
   id: number;
-  text: string;
-  triggered: boolean;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  opacity: number;
 }
 
-// --- GAME CONSTANTS ---
-const GAME_WIDTH = 800;
-const GAME_HEIGHT = 600;
-const PLAYER_WIDTH = 40;
-const PLAYER_HEIGHT = 60;
-const PLAYER_SPEED = 5;
-const JUMP_STRENGTH = -12;
+type GameState = 'start' | 'playing' | 'paused' | 'win' | 'lose';
+
+// --- CONSTANTS ---
+const WIDTH = 800;
+const HEIGHT = 600;
+const PLAYER_WIDTH = 32;
+const PLAYER_HEIGHT = 48;
+const PLAYER_SPEED = 4;
 const GRAVITY = 0.6;
-const PROJECTILE_SPEED = 8;
-const LEVEL_WIDTH = 3200; 
-const BOSS_ARENA_START = LEVEL_WIDTH - GAME_WIDTH;
+const JUMP_FORCE = -12;
+
+const LEVEL_WIDTH = 4800;
 
 // --- LEVEL DATA ---
-const level1Data: LevelEntityObject[] = [
-    // --- Ground and Platforms ---
-    { id: 1, type: 'platform', x: 0, y: 550, width: 800, height: 50 },
-    { id: 2, type: 'platform', x: 900, y: 550, width: 600, height: 50 },
-    { id: 3, type: 'platform', x: 1600, y: 550, width: 400, height: 50 },
-    { id: 4, type: 'platform', x: 2100, y: 550, width: 200, height: 50 },
-    { id: 5, type: 'platform', x: 2400, y: 550, width: 800, height: 50 },
-    { id: 6, type: 'platform', x: 200, y: 450, width: 150, height: 20 },
-    { id: 7, type: 'platform', x: 400, y: 380, width: 150, height: 20 },
-    { id: 8, type: 'platform', x: 1000, y: 450, width: 150, height: 20 },
-    { id: 9, type: 'platform', x: 1200, y: 350, width: 150, height: 20 },
-    { id: 10, type: 'platform', x: 1700, y: 400, width: 150, height: 20 },
-    { id: 11, type: 'platform', x: 2200, y: 300, width: 150, height: 20 },
+const levelData: LevelEntityObject[] = [
+  // Start area
+  { id: 1, type: 'platform', x: 0, y: 550, width: 400, height: 50 },
+  { id: 2, type: 'platform', x: 450, y: 500, width: 150, height: 20 },
+  { id: 3, type: 'platform', x: 650, y: 450, width: 150, height: 20 },
+  { id: 4, type: 'power-up-box', x: 700, y: 350, width: 40, height: 40 },
 
-    // --- Enemies ---
-    { id: 101, type: 'enemy', variant: 'mini-virus', x: 500, y: 510, width: 40, height: 40, patrolStart: 500, patrolEnd: 700, direction: 1 },
-    { id: 102, type: 'enemy', variant: 'mini-virus', x: 1100, y: 510, width: 40, height: 40, patrolStart: 1100, patrolEnd: 1400, direction: 1 },
-    { id: 103, type: 'enemy', variant: 'mini-virus', x: 1750, y: 510, width: 40, height: 40, patrolStart: 1750, patrolEnd: 1900, direction: -1 },
-    { id: 104, type: 'spambot', x: 1225, y: 310, width: 40, height: 40 },
-    { id: 105, type: 'spambot', x: 2225, y: 260, width: 40, height: 40 },
+  // First challenge
+  { id: 5, type: 'platform', x: 850, y: 550, width: 300, height: 50 },
+  { id: 101, type: 'log', x: 950, y: 518, width: 32, height: 32 },
+  { id: 6, type: 'platform', x: 1200, y: 500, width: 100, height: 20 },
+  { id: 7, type: 'platform', x: 1350, y: 450, width: 100, height: 20 },
+  { id: 8, type: 'platform', x: 1500, y: 400, width: 100, height: 20 },
+  { id: 9, type: 'platform', x: 1650, y: 550, width: 400, height: 50 },
 
-    // --- Power-ups & Interactive ---
-    { id: 201, type: 'powerupBox', x: 250, y: 350, width: 40, height: 40, activated: false }, // Weapon
-    { id: 202, type: 'powerupBox', x: 1050, y: 350, width: 40, height: 40, activated: false }, // Invincibility
-    { id: 203, type: 'powerupBox', x: 1750, y: 300, width: 40, height: 40, activated: false }, // Extra Life
-    
-    { id: 301, type: 'firewall', x: 2000, y: 450, width: 20, height: 100, activated: true },
-    { id: 302, type: 'console', x: 1800, y: 510, width: 50, height: 40, linkedId: 301, activated: false },
+  // Firewall challenge
+  { id: 10, type: 'firewall', x: 2100, y: 400, width: 20, height: 150, active: true },
+  { id: 11, type: 'platform', x: 2050, y: 550, width: 200, height: 50 },
+  { id: 12, type: 'console', x: 1950, y: 510, width: 40, height: 40, linkedElementId: 10 },
+  { id: 13, type: 'platform', x: 1900, y: 550, width: 100, height: 50 },
 
-    { id: 401, type: 'log', x: 450, y: 350, width: 30, height: 30, activated: false },
-
-    // --- Boss ---
-    { id: 501, type: 'boss', x: 2800, y: 300, width: 150, height: 150, health: 10, maxHealth: 10, direction: 1 }
+  // Mid-section
+  { id: 14, type: 'platform', x: 2200, y: 550, width: 600, height: 50 },
+  { id: 15, type: 'platform', x: 2400, y: 450, width: 150, height: 20 },
+  { id: 16, type: 'power-up-box', x: 2455, y: 350, width: 40, height: 40 },
+  { id: 102, type: 'log', x: 2600, y: 418, width: 32, height: 32 },
+  { id: 17, type: 'platform', x: 2900, y: 500, width: 150, height: 20 },
+  { id: 18, type: 'platform', x: 3100, y: 450, width: 150, height: 20 },
+  { id: 19, type: 'platform', x: 3300, y: 400, width: 150, height: 20 },
+  
+  // Pre-boss area
+  { id: 20, type: 'platform', x: 3500, y: 550, width: 500, height: 50 },
+  { id: 21, type: 'power-up-box', x: 3700, y: 450, width: 40, height: 40, hit: false },
+  { id: 22, type: 'power-up-box', x: 3750, y: 450, width: 40, height: 40, hit: false },
+  
+  // Boss arena
+  { id: 23, type: 'platform', x: 4200, y: 550, width: 600, height: 50 },
+  // FIX: Removed duplicate 'id' property. The correct ID is 999 as used in the game logic.
+  { id: 999, type: 'firewall', x: 4180, y: 300, width: 20, height: 250, active: true }, // Boss wall
+  { id: 25, type: 'goal', x: 4750, y: 500, width: 50, height: 50, active: false }
 ];
 
-const mentorMessages: MentorMessage[] = [
-    {id: 1, text: "> SYS_ADMIN: Welcome to CyberNetOS, ZeroByte. My diagnostics show the first infection point is in this home network sector. Let's get to work.", triggered: false},
-    {id: 2, text: "> SYS_ADMIN: Watch out. Basic malware detected. They're simple, but they can still corrupt your energy bytes.", triggered: false},
-    {id: 3, text: "> SYS_ADMIN: I'm detecting power-up containers. Hit them from below. They should contain useful subroutines.", triggered: false},
-    {id: 4, text: "> SYS_ADMIN: That's a data log. Collect it. These logs might tell us how the infection started.", triggered: false},
-    {id: 5, text: "> SYS_ADMIN: A corrupted firewall is blocking the path. Find its control console to deactivate it. You'll need to get close and interface with 'E'.", triggered: false},
-    {id: 6, text: "> SYS_ADMIN: That's it! Firewall deactivated. Proceed with caution.", triggered: false},
-    {id: 7, text: "> SYS_ADMIN: Reading high-level corruption ahead... It's the sector's guardian program, now a puppet. You have to take it down. This is the 'Adware King'.", triggered: false},
+const initialEnemies: EnemyObject[] = [
+    { id: 1, type: 'Mini-Virus', x: 900, y: 518, width: 32, height: 32, patrolStart: 850, patrolEnd: 1120, vx: 1, direction: 'right' },
+    { id: 2, type: 'Spam-bot', x: 1750, y: 500, width: 40, height: 50, patrolStart: 0, patrolEnd: 0, vx: 0, direction: 'left', shootCooldown: 120 },
+    { id: 3, type: 'Mini-Virus', x: 2250, y: 518, width: 32, height: 32, patrolStart: 2200, patrolEnd: 2770, vx: 1, direction: 'right' },
+    { id: 4, type: 'Mini-Virus', x: 2500, y: 418, width: 32, height: 32, patrolStart: 2400, patrolEnd: 2520, vx: 1, direction: 'right' },
+    { id: 5, type: 'Spam-bot', x: 3200, y: 400, width: 40, height: 50, patrolStart: 0, patrolEnd: 0, vx: 0, direction: 'left', shootCooldown: 120 },
+    { id: 6, type: 'The Adware King', x: 4500, y: 300, width: 80, height: 100, patrolStart: 200, patrolEnd: 450, vx: 0, direction: 'down', health: 20, maxHealth: 20, shootCooldown: 90 },
 ];
 
-
-// --- UTILITY FUNCTIONS ---
-const useGameLoop = (callback: () => void) => {
-    const requestRef = useRef<number>();
-    const animate = () => {
-        callback();
-        requestRef.current = requestAnimationFrame(animate);
-    };
-    useEffect(() => {
-        requestRef.current = requestAnimationFrame(animate);
-        return () => {
-            if (requestRef.current) {
-                cancelAnimationFrame(requestRef.current);
-            }
-        };
-    }, [callback]);
+const mentorMessages: { [key: number]: string } = {
+  101: "> SYSADMIN: Welcome to the system, ZeroByte. These are Audit Logs. Collect them to recover corrupted data... and to understand how this mess started.",
+  102: "> SYSADMIN: Watch out. Some malware is passive, but others, like that Spam-bot, will attack on sight. Find a weapon power-up to fight back.",
+  12: "> SYSADMIN: That's a system Firewall. It's blocking your path. Find the linked console to disable it. I'm marking it on your HUD.",
+  999: "> SYSADMIN: That's him... The Adware King. He's primitive, but he's locked down this sector. Take him out to restore the firewall!",
 };
 
-// --- REACT COMPONENTS ---
-interface ScreenProps {
-    onStart?: () => void;
-    onRestart?: () => void;
-    children?: React.ReactNode;
-}
+// --- HELPER FUNCTIONS ---
+const checkCollision = (a: { x: number, y: number, width: number, height: number }, b: { x: number, y: number, width: number, height: number }) => {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+};
 
-const UI: React.FC<{ lives: number; hasShield: boolean; hasWeapon: boolean; invincible: boolean; message: string; bossHealth: number | null; bossMaxHealth: number | null }> = ({ lives, hasShield, hasWeapon, invincible, message, bossHealth, bossMaxHealth }) => (
-    <div className="absolute top-0 left-0 w-full p-4 text-green-400 font-mono z-20 pointer-events-none">
-        <div className="flex justify-between items-start">
-            <div>
-                <p>ENERGY BYTES: {'O '.repeat(lives)}</p>
-                <div className="flex space-x-4 mt-2">
-                    {hasShield && <p className="bg-blue-500 text-black px-2 py-1 rounded">SHIELD</p>}
-                    {hasWeapon && <p className="bg-yellow-500 text-black px-2 py-1 rounded">WEAPON</p>}
-                    {invincible && <p className="bg-purple-500 text-black px-2 py-1 rounded animate-pulse">INVINCIBLE</p>}
-                </div>
-            </div>
-            
-        </div>
-        {message && <p className="absolute bottom-4 left-4 right-4 bg-black bg-opacity-70 p-2 rounded">{message}</p>}
-        {bossHealth !== null && bossMaxHealth !== null && (
-            <div className="absolute bottom-20 left-1/2 -translate-x-1/2 w-1/2 bg-gray-700 rounded overflow-hidden border-2 border-red-500">
-                <div className="bg-red-500 h-6" style={{ width: `${(bossHealth / bossMaxHealth) * 100}%` }}></div>
-                <p className="absolute inset-0 text-center text-white font-bold">THE ADWARE KING</p>
-            </div>
-        )}
-    </div>
-);
-
-const StartScreen: React.FC<ScreenProps> = ({ onStart }) => (
-    <div className="w-full h-full flex flex-col justify-center items-center bg-black bg-opacity-80 text-green-400 font-mono">
-        <h1 className="text-6xl mb-4 animate-pulse">Cyber Defender</h1>
-        <h2 className="text-3xl mb-8">The Firewall Quest</h2>
-        <button onClick={onStart} className="text-2xl px-8 py-4 border-2 border-green-400 rounded hover:bg-green-400 hover:text-black transition-colors">
-            &gt; START MISSION &lt;
-        </button>
-    </div>
-);
-
-const EndScreen: React.FC<ScreenProps> = ({ onRestart }) => (
-    <div className="w-full h-full flex flex-col justify-center items-center bg-black bg-opacity-80 text-red-500 font-mono">
-        <h1 className="text-6xl mb-4">SYSTEM FAILURE</h1>
-        <h2 className="text-3xl mb-8">Energy Bytes Depleted</h2>
-        <button onClick={onRestart} className="text-2xl px-8 py-4 border-2 border-red-500 rounded hover:bg-red-500 hover:text-black transition-colors">
-            &gt; REBOOT &lt;
-        </button>
-    </div>
-);
-
-const LevelCompleteScreen: React.FC<ScreenProps> = ({ onRestart }) => (
-    <div className="w-full h-full flex flex-col justify-center items-center bg-black bg-opacity-80 text-cyan-400 font-mono">
-        <h1 className="text-6xl mb-4">SECTOR CLEANSED</h1>
-        <h2 className="text-3xl mb-8">Adware King Defeated</h2>
-        <button onClick={onRestart} className="text-2xl px-8 py-4 border-2 border-cyan-400 rounded hover:bg-cyan-400 hover:text-black transition-colors">
-            &gt; CONTINUE TO NEXT SECTOR &lt;
-        </button>
-    </div>
-);
-
-const Player: React.FC<{ x: number; y: number; invincible: boolean }> = ({ x, y, invincible }) => (
-    <div
-        className={`absolute transition-transform duration-100 ${invincible ? 'opacity-50' : ''}`}
-        style={{
+// --- COMPONENTS ---
+const Player = React.memo(({ player }: { player: PlayerState }) => {
+    const { x, y, direction, hasWeapon, hasShield, isInvincible } = player;
+    const shieldStyle: React.CSSProperties = {
+        position: 'absolute',
+        width: `${PLAYER_WIDTH + 20}px`,
+        height: `${PLAYER_HEIGHT + 20}px`,
+        left: '-10px',
+        top: '-10px',
+        borderRadius: '50%',
+        border: '3px solid #00ffff',
+        opacity: hasShield ? 0.75 : 0,
+        transition: 'opacity 0.2s ease-in-out',
+        animation: 'spin 4s linear infinite',
+    };
+    
+    return (
+        <div style={{
+            position: 'absolute',
+            left: x,
+            top: y,
             width: PLAYER_WIDTH,
             height: PLAYER_HEIGHT,
-            transform: `translate(${x}px, ${y}px)`,
-        }}
-    >
-        <div className="w-full h-full bg-black border-2 border-green-400 relative">
-            {/* Visor */}
-            <div className="absolute top-[10px] left-[5px] right-[5px] h-[10px] bg-blue-400 border border-blue-200"></div>
-             {/* Body detail */}
-            <div className="absolute bottom-[10px] left-[15px] right-[15px] h-[20px] bg-gray-800 border-t border-green-500"></div>
+            transform: `scaleX(${direction === 'right' ? 1 : -1})`,
+            opacity: isInvincible ? (Math.floor(Date.now() / 100) % 2 === 0 ? 0.5 : 1) : 1,
+            transition: 'opacity 0.1s linear',
+        }}>
+             {hasShield && <div style={shieldStyle} />}
+            {/* Body */}
+            <div style={{ position: 'absolute', width: '80%', height: '80%', left: '10%', top: '20%', background: '#1a1a1a', border: '2px solid #00ff00' }} />
+             {/* Energy Belt */}
+            <div style={{ position: 'absolute', width: '85%', height: '10%', left: '7.5%', top: '50%', background: '#00ffff', animation: 'pulse 2s infinite' }} />
+            {/* Head/Visor */}
+            <div style={{ position: 'absolute', width: '60%', height: '25%', left: '20%', top: '0%', background: '#1a1a1a', border: '2px solid #00ff00' }}>
+                 <div style={{width: '90%', height: '40%', margin: '15% auto', background: '#00ffff'}} />
+            </div>
+            {/* Pulse Glove */}
+            <div style={{
+                position: 'absolute',
+                width: '25%',
+                height: '25%',
+                left: '70%',
+                top: '50%',
+                background: hasWeapon ? '#ffff00' : '#444',
+                borderRadius: '50%',
+                border: '2px solid #00ff00',
+                transition: 'background 0.2s'
+             }} />
         </div>
-         {/* Floating Hands */}
-        <div className="absolute top-[25px] -left-[10px] w-5 h-5 bg-gray-600 border border-green-400 rounded-full animate-float"></div>
-        <div className="absolute top-[25px] -right-[10px] w-5 h-5 bg-gray-600 border border-green-400 rounded-full animate-float-delay"></div>
-        {/* Floating Feet */}
-        <div className="absolute bottom-[-15px] left-[5px] w-6 h-4 bg-gray-700 border border-green-400"></div>
-        <div className="absolute bottom-[-15px] right-[5px] w-6 h-4 bg-gray-700 border border-green-400"></div>
-        <style>{`
-            @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
-            .animate-float { animation: float 2s ease-in-out infinite; }
-            .animate-float-delay { animation: float 2s 1s ease-in-out infinite; }
-        `}</style>
-    </div>
-);
+    );
+});
 
-
-const LevelEntity: React.FC<{ entity: LevelEntityObject }> = ({ entity }) => {
-    const baseStyle = {
+const LevelEntity = React.memo(({ entity }: { entity: LevelEntityObject }) => {
+    const { type, x, y, width, height, hit, active, collected } = entity;
+    const style: React.CSSProperties = {
         position: 'absolute',
-        left: entity.x,
-        top: entity.y,
-        width: entity.width,
-        height: entity.height,
-    } as React.CSSProperties;
-
-    const getEntityStyle = () => {
-        switch(entity.type) {
-            case 'platform':
-                return { 
-                    ...baseStyle, 
-                    backgroundColor: '#052e16', // dark green
-                    border: '2px solid #10b981', // emerald-500
-                    boxShadow: 'inset 0 0 10px #10b981',
-                };
-            case 'enemy':
-                 return { ...baseStyle, display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: '#1a1a1a' };
-            case 'spambot':
-                return { ...baseStyle, backgroundColor: '#4a4a4a', border: '2px solid #f97316' };
-            case 'powerupBox':
-                return {
-                    ...baseStyle,
-                    backgroundColor: entity.activated ? '#333' : '#f59e0b',
-                    border: '2px solid white',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    fontSize: '2rem',
-                    color: 'white',
-                    fontWeight: 'bold',
-                    boxShadow: entity.activated ? 'none' : '0 0 15px #f59e0b'
-                };
-            case 'firewall':
-                return { ...baseStyle, backgroundColor: entity.activated ? 'rgba(239, 68, 68, 0.7)' : 'rgba(74, 222, 128, 0.3)', border: `2px solid ${entity.activated ? '#ef4444' : '#4ade80'}` };
-            case 'console':
-                return { ...baseStyle, backgroundColor: '#1f2937', border: `3px solid ${entity.activated ? '#4ade80' : '#f59e0b'}` };
-            case 'log':
-                return { ...baseStyle, backgroundColor: '#3b82f6', borderRadius: '50%', border: '2px solid white' };
-            case 'boss':
-                 return { ...baseStyle, backgroundColor: '#4a044e', border: '4px solid #a21caf' };
-            default:
-                return baseStyle;
-        }
+        left: x,
+        top: y,
+        width,
+        height,
+        boxSizing: 'border-box',
     };
 
-    return (
-        <div style={getEntityStyle()}>
-            {entity.type === 'powerupBox' && !entity.activated && '?'}
-            {entity.type === 'console' && (
-                <div className="w-full h-full flex justify-center items-center">
-                    <div className="w-3/4 h-1/2 bg-black border border-green-400 animate-pulse"></div>
-                </div>
-            )}
-            {entity.type === 'enemy' && entity.variant === 'mini-virus' && (
-                <div className="w-1/2 h-1/2 bg-red-600 rounded-full animate-pulse border-2 border-red-300"></div>
-            )}
-             {entity.type === 'spambot' && (
-                <div className="w-1/2 h-1/2 bg-orange-500 rounded-full border-2 border-orange-200"></div>
-            )}
-            {entity.type === 'boss' && (
-                <div className="w-full h-full flex justify-center items-center">
-                    <div className="w-1/3 h-1/3 bg-red-500 animate-pulse"></div>
-                </div>
-            )}
-        </div>
-    );
-};
+    switch (type) {
+        case 'platform':
+            return <div style={{...style, background: '#333', border: '2px solid #555', borderTop: '4px solid #777' }} />;
+        case 'power-up-box':
+            return <div style={{ ...style, background: hit ? '#555' : '#ffae00', border: '3px solid #ffff00', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff', fontSize: '2em', fontWeight: 'bold' }}>?</div>;
+        case 'firewall':
+            return active ? <div style={{ ...style, background: 'rgba(255, 0, 0, 0.5)', border: '2px solid red', animation: 'firewall-flicker 1s infinite' }} /> : null;
+        case 'console':
+            return <div style={{ ...style, background: '#1a4a1a', border: '3px solid #00ff00' }}><div style={{width: '80%', height: '60%', margin: '10% auto', background: '#000'}} /></div>;
+        case 'log':
+             return !collected ? <div style={{ ...style, background: '#00ffff', borderRadius: '50%', animation: 'pulse 2s infinite' }} /> : null;
+        case 'goal':
+             return active ? <div style={{ ...style, background: 'green', animation: 'pulse 2s infinite' }} /> : null;
+        default:
+            return null;
+    }
+});
 
+const Enemy = React.memo(({ enemy }: { enemy: EnemyObject }) => {
+    const { type, x, y, width, height, direction } = enemy;
+     const style: React.CSSProperties = {
+        position: 'absolute',
+        left: x,
+        top: y,
+        width,
+        height,
+        transform: `scaleX(${direction === 'right' ? 1 : -1})`,
+    };
 
-const ProjectileComponent: React.FC<{ projectile: Projectile }> = ({ projectile }) => (
-    <div
-        className="absolute"
-        style={{
-            left: projectile.x,
-            top: projectile.y,
-            width: 15,
-            height: 15,
-            backgroundColor: projectile.type === 'player' ? '#67e8f9' : '#f97316',
-            borderRadius: '50%',
-            boxShadow: `0 0 10px ${projectile.type === 'player' ? '#67e8f9' : '#f97316'}`,
-        }}
-    ></div>
-);
+    if (type === 'Mini-Virus') {
+        return <div style={{...style, background: '#333', border: '2px solid #ff0000'}}>
+             <div style={{position: 'absolute', width: '40%', height: '40%', left: '30%', top: '30%', background: 'red', borderRadius: '50%', animation: 'pulse 1s infinite'}} />
+        </div>;
+    }
+    if (type === 'Spam-bot') {
+        return <div style={{...style, background: '#555', border: '2px solid orange'}}>
+             <div style={{position: 'absolute', width: '70%', height: '20%', left: '15%', top: '40%', background: 'orange', borderRadius: '5px'}} />
+        </div>;
+    }
+    if (type === 'The Adware King') {
+         return <div style={{...style, background: 'purple', border: '4px solid #ff00ff'}}>
+             <div style={{position: 'absolute', width: '50%', height: '20%', background: 'red', left: '25%', top: '10%'}} />
+             <div style={{position: 'absolute', width: '20%', height: '20%', background: 'red', left: '15%', top: '40%'}} />
+             <div style={{position: 'absolute', width: '20%', height: '20%', background: 'red', left: '65%', top: '40%'}} />
+        </div>;
+    }
+    return null;
+});
 
-const ParticleEffect: React.FC<{ x: number; y: number }> = ({ x, y }) => {
-    const particles = Array.from({ length: 10 });
-    return (
-        <div className="absolute" style={{ left: x, top: y, width: 1, height: 1 }}>
-            {particles.map((_, i) => (
-                <div
-                    key={i}
-                    className="absolute bg-yellow-400 rounded-full"
-                    style={{
-                        animation: `particle-burst 0.5s ease-out forwards`,
-                        '--angle': `${Math.random() * 360}deg`,
-                        '--distance': `${Math.random() * 30 + 20}px`,
-                        width: '5px',
-                        height: '5px',
-                    }}
-                ></div>
-            ))}
-            <style>{`
-                @keyframes particle-burst {
-                    from { transform: rotate(var(--angle)) translateX(0) scale(1); opacity: 1; }
-                    to { transform: rotate(var(--angle)) translateX(var(--distance)) scale(0); opacity: 0; }
-                }
-            `}</style>
-        </div>
-    );
-};
+const ProjectileComponent = React.memo(({ projectile }: { projectile: Projectile }) => {
+    const style: React.CSSProperties = {
+        position: 'absolute',
+        left: projectile.x,
+        top: projectile.y,
+        width: 15,
+        height: 15,
+        borderRadius: '50%',
+        background: projectile.owner === 'player' ? 'cyan' : 'orange',
+    };
+    return <div style={style} />;
+});
 
-const GameBackground: React.FC<{ cameraX: number }> = ({ cameraX }) => (
-    <div 
-        className="absolute top-0 left-0 w-full h-full bg-black overflow-hidden"
-    >
-        <div 
-            className="absolute top-0 left-0 w-[200%] h-full bg-[linear-gradient(rgba(0,0,0,0.9),rgba(0,0,0,0.9)),url('data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%20width%3D%2232%22%20height%3D%2232%22%20fill%3D%22none%22%20stroke%3D%22%23059669%22%3E%3Cpath%20d%3D%22M0%20.5H32V32%22/%3E%3C/svg%3E')]"
-            style={{
-                transform: `translateX(${-cameraX * 0.1}px)`,
-                animation: 'background-pan 10s linear infinite alternate',
-            }}
-        ></div>
-         <div 
-            className="absolute top-0 left-0 w-[200%] h-full"
-            style={{
-                transform: `translateX(${-cameraX * 0.3}px)`,
-                background: `radial-gradient(circle at 20% 20%, rgba(16, 185, 129, 0.1) 0%, transparent 30%),
-                             radial-gradient(circle at 80% 70%, rgba(14, 165, 233, 0.1) 0%, transparent 30%)`,
-            }}
-        ></div>
+const ParticleComponent = React.memo(({ particle }: { particle: Particle }) => (
+    <div style={{
+        position: 'absolute',
+        left: particle.x,
+        top: particle.y,
+        width: 5,
+        height: 5,
+        background: '#ffff00',
+        opacity: particle.opacity,
+        borderRadius: '50%',
+    }} />
+));
+
+const Background = React.memo(() => (
+    <div style={{ position: 'absolute', width: '100%', height: '100%', background: '#0c0c1c', overflow: 'hidden' }}>
+        {[...Array(50)].map((_, i) => (
+             <div key={i} className="blinking-led" style={{
+                position: 'absolute',
+                left: `${Math.random() * 100}%`,
+                top: `${Math.random() * 100}%`,
+                width: '4px',
+                height: '4px',
+                backgroundColor: '#00ff00',
+                borderRadius: '50%',
+                opacity: 0,
+                animation: `blinking ${Math.random() * 5 + 2}s infinite ${Math.random() * 3}s`,
+             }} />
+        ))}
+         <div className="scanline" />
+         <div className="grid-bg" />
     </div>
-);
+));
 
+const UI = React.memo(({ lives, message }: { lives: number, message: string }) => (
+    <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', color: 'white', fontFamily: 'monospace', zIndex: 100 }}>
+        <div style={{ padding: '10px', fontSize: '20px' }}>
+            ENERGY BYTES: {'💚'.repeat(lives)}
+        </div>
+         {message && <div style={{ position: 'absolute', bottom: '20px', left: '20px', right: '20px', background: 'rgba(0,0,0,0.7)', padding: '15px', border: '1px solid #00ff00' }}>{message}</div>}
+    </div>
+));
 
 // --- MAIN APP COMPONENT ---
-const App: React.FC = () => {
-    const [gameState, setGameState] = useState<'start' | 'playing' | 'dead' | 'levelComplete'>('start');
-    
-    const [playerState, setPlayerState] = useState<PlayerState>({ x: 100, y: 490, vx: 0, vy: 0, onGround: false, lives: 3, hasShield: false, hasWeapon: false, invincible: false, invincibleTimer: 0 });
-    
-    const [levelEntities, setLevelEntities] = useState<LevelEntityObject[]>(JSON.parse(JSON.stringify(level1Data)));
-    
-    const [projectiles, setProjectiles] = useState<Projectile[]>([]);
-    const [enemyProjectiles, setEnemyProjectiles] = useState<Projectile[]>([]);
+export default function App() {
+  const [gameState, setGameState] = useState<GameState>('start');
+  const [player, setPlayer] = useState<PlayerState>({ x: 50, y: 450, vx: 0, vy: 0, onGround: false, direction: 'right', hasWeapon: false, hasShield: false, isInvincible: false, invincibleTimer: 0 });
+  const [enemies, setEnemies] = useState<EnemyObject[]>(JSON.parse(JSON.stringify(initialEnemies)));
+  const [level, setLevel] = useState<LevelEntityObject[]>(JSON.parse(JSON.stringify(levelData)));
+  const [projectiles, setProjectiles] = useState<Projectile[]>([]);
+  const [particles, setParticles] = useState<Particle[]>([]);
+  const [cameraX, setCameraX] = useState(0);
+  const [lives, setLives] = useState(3);
+  const [message, setMessage] = useState('');
+  const messageTimerRef = useRef<number | null>(null);
+  
+  const keysRef = useRef<{ [key: string]: boolean }>({});
+  const gameLoopRef = useRef<number>();
 
-    const [particleEffects, setParticleEffects] = useState<ParticleEffect[]>([]);
-    
-    const [keys, setKeys] = useState<Record<string, boolean>>({});
-    const [cameraX, setCameraX] = useState(0);
+  const resetGame = useCallback(() => {
+    setPlayer({ x: 50, y: 450, vx: 0, vy: 0, onGround: false, direction: 'right', hasWeapon: false, hasShield: false, isInvincible: false, invincibleTimer: 0 });
+    setEnemies(JSON.parse(JSON.stringify(initialEnemies)));
+    setLevel(JSON.parse(JSON.stringify(levelData)));
+    setProjectiles([]);
+    setParticles([]);
+    setLives(3);
+    setMessage('');
+    setGameState('playing');
+  }, []);
+  
+  const createParticles = useCallback((x: number, y: number) => {
+    const newParticles: Particle[] = [];
+    for (let i = 0; i < 20; i++) {
+        newParticles.push({
+            id: Math.random(),
+            x,
+            y,
+            vx: (Math.random() - 0.5) * 8,
+            vy: (Math.random() - 0.5) * 8,
+            opacity: 1,
+        });
+    }
+    setParticles(prev => [...prev, ...newParticles]);
+  }, []);
 
-    const [currentMessage, setCurrentMessage] = useState("");
-    const [messages, setMessages] = useState<MentorMessage[]>(JSON.parse(JSON.stringify(mentorMessages)));
-    // FIX: Changed NodeJS.Timeout to number for browser compatibility.
-    const messageTimeoutRef = useRef<number | null>(null);
+  const showMessage = useCallback((text: string) => {
+    setMessage(text);
+    if(messageTimerRef.current) clearTimeout(messageTimerRef.current);
+    messageTimerRef.current = window.setTimeout(() => setMessage(''), 4000);
+  }, []);
 
-    const shootCooldown = useRef(false);
-    const spambotCooldowns = useRef<Record<number, boolean>>({});
+  const gameLoop = useCallback(() => {
+    if (gameState !== 'playing') return;
 
-    const triggerMessage = useCallback((text: string) => {
-        if (messageTimeoutRef.current) {
-            clearTimeout(messageTimeoutRef.current);
-        }
-        setCurrentMessage(text);
-        messageTimeoutRef.current = setTimeout(() => {
-            setCurrentMessage("");
-        }, 5000);
-    }, []);
-
-    const checkAndTriggerMentorMessage = useCallback((condition: boolean, msgId: number) => {
-        const msg = messages.find(m => m.id === msgId);
-        if (condition && msg && !msg.triggered) {
-            triggerMessage(msg.text);
-            setMessages(prev => prev.map(m => m.id === msgId ? {...m, triggered: true} : m));
-        }
-    }, [messages, triggerMessage]);
-
-    const resetGame = useCallback(() => {
-        setPlayerState({ x: 100, y: 490, vx: 0, vy: 0, onGround: false, lives: 3, hasShield: false, hasWeapon: false, invincible: false, invincibleTimer: 0 });
-        setLevelEntities(JSON.parse(JSON.stringify(level1Data)));
-        setProjectiles([]);
-        setEnemyProjectiles([]);
-        setMessages(JSON.parse(JSON.stringify(mentorMessages)));
-        setCurrentMessage("");
-        setGameState('playing');
-    }, []);
-    
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => setKeys(prev => ({ ...prev, [e.key.toLowerCase()]: true }));
-        const handleKeyUp = (e: KeyboardEvent) => setKeys(prev => ({ ...prev, [e.key.toLowerCase()]: false }));
-        window.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('keyup', handleKeyUp);
-        return () => {
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('keyup', handleKeyUp);
-        };
-    }, []);
-
-    const gameLogic = useCallback(() => {
-        if (gameState !== 'playing') return;
-
-        let newPlayerState = { ...playerState };
-
-        // --- Handle Input ---
-        let targetVx = 0;
-        if (keys['a'] || keys['arrowleft']) targetVx = -PLAYER_SPEED;
-        if (keys['d'] || keys['arrowright']) targetVx = PLAYER_SPEED;
-        newPlayerState.vx = targetVx;
-
-        if ((keys['w'] || keys['arrowup'] || keys[' ']) && newPlayerState.onGround) {
-            newPlayerState.vy = JUMP_STRENGTH;
-            newPlayerState.onGround = false;
+    // --- Player Logic ---
+    setPlayer(p => {
+        let { x, y, vx, vy, onGround, direction, hasShield, isInvincible, invincibleTimer } = p;
+        
+        // Horizontal movement
+        vx = 0;
+        if (keysRef.current.ArrowLeft || keysRef.current.a) { vx = -PLAYER_SPEED; direction = 'left'; }
+        if (keysRef.current.ArrowRight || keysRef.current.d) { vx = PLAYER_SPEED; direction = 'right'; }
+        
+        // Jumping
+        if ((keysRef.current.ArrowUp || keysRef.current.w) && onGround) {
+            vy = JUMP_FORCE;
+            onGround = false;
         }
 
-        if (keys['x'] && playerState.hasWeapon && !shootCooldown.current) {
-            setProjectiles(prev => [...prev, { id: Date.now(), x: playerState.x + PLAYER_WIDTH / 2, y: playerState.y + PLAYER_HEIGHT / 2, vx: PLAYER_SPEED + 2, vy: 0 }]);
-            shootCooldown.current = true;
-            setTimeout(() => { shootCooldown.current = false; }, 300);
-        }
-
-        // --- Physics & Player Update ---
-        newPlayerState.vy += GRAVITY;
-        newPlayerState.x += newPlayerState.vx;
-        newPlayerState.y += newPlayerState.vy;
-        newPlayerState.onGround = false;
-
-        // --- Boundary checks ---
-        if (newPlayerState.x < 0) newPlayerState.x = 0;
-        if (newPlayerState.x + PLAYER_WIDTH > LEVEL_WIDTH) newPlayerState.x = LEVEL_WIDTH - PLAYER_WIDTH;
-        if (newPlayerState.y > GAME_HEIGHT) { // Player fell
-            newPlayerState.lives -= 1;
-            if (newPlayerState.lives <= 0) {
-                setGameState('dead');
-            } else {
-                newPlayerState.x = 100;
-                newPlayerState.y = 490;
-                newPlayerState.vy = 0;
-            }
+        // Apply gravity
+        vy += GRAVITY;
+        
+        // Handle invincibility timer
+        if (isInvincible) {
+            invincibleTimer -= 1;
+            if(invincibleTimer <= 0) isInvincible = false;
         }
         
-        // --- Collision Detection with platforms/firewalls ---
-        levelEntities.forEach(entity => {
+        // Update position
+        let newX = x + vx;
+        let newY = y + vy;
+        
+        onGround = false;
+
+        // Collision with level
+        level.forEach(entity => {
             if (entity.type !== 'platform' && entity.type !== 'firewall') return;
-            if (entity.type === 'firewall' && !entity.activated) return;
+            if (entity.type === 'firewall' && !entity.active) return;
+            
+            const entityRect = { x: entity.x, y: entity.y, width: entity.width, height: entity.height };
+            const playerRect = { x: newX, y: newY, width: PLAYER_WIDTH, height: PLAYER_HEIGHT };
 
-            if (newPlayerState.x < entity.x + entity.width &&
-                newPlayerState.x + PLAYER_WIDTH > entity.x &&
-                newPlayerState.y < entity.y + entity.height &&
-                newPlayerState.y + PLAYER_HEIGHT > entity.y) {
-
-                const overlapX = (newPlayerState.x + PLAYER_WIDTH / 2) - (entity.x + entity.width / 2);
-                const overlapY = (newPlayerState.y + PLAYER_HEIGHT / 2) - (entity.y + entity.height / 2);
-                const combinedHalfWidths = PLAYER_WIDTH / 2 + entity.width / 2;
-                const combinedHalfHeights = PLAYER_HEIGHT / 2 + entity.height / 2;
-
-                if (Math.abs(overlapX) < combinedHalfWidths && Math.abs(overlapY) < combinedHalfHeights) {
-                    const overlapXAmount = combinedHalfWidths - Math.abs(overlapX);
-                    const overlapYAmount = combinedHalfHeights - Math.abs(overlapY);
-                    
-                    if (overlapYAmount < overlapXAmount) {
-                         if (overlapY > 0 && newPlayerState.vy < 0) { // Collision from top
-                            newPlayerState.y = entity.y + entity.height;
-                            newPlayerState.vy = 0;
-                            
-                            if(entity.type === 'platform') { // Check for powerup box hit
-                                const box = levelEntities.find(p => p.type === 'powerupBox' && !p.activated && newPlayerState.x < p.x + p.width && newPlayerState.x + PLAYER_WIDTH > p.x && p.y > entity.y && Math.abs((newPlayerState.y - PLAYER_HEIGHT) - p.y) < 50);
-                                if (box && newPlayerState.y > box.y + box.height) { // Ensure player is below the box
-                                     setLevelEntities(prev => prev.map(e => e.id === box.id ? {...e, activated: true} : e));
-                                    setParticleEffects(prev => [...prev, { id: Date.now(), x: box.x + box.width / 2, y: box.y + box.height / 2 }]);
-                                    
-                                    if(box.id === 201) newPlayerState.hasWeapon = true;
-                                    if(box.id === 202) {
-                                        newPlayerState.invincible = true;
-                                        newPlayerState.invincibleTimer = 300; // 5 seconds at 60fps
-                                    }
-                                    if(box.id === 203) newPlayerState.lives = Math.min(5, newPlayerState.lives + 1);
-                                }
-                            }
-                        } else { // Collision from bottom
-                            newPlayerState.y = entity.y - PLAYER_HEIGHT;
-                            newPlayerState.vy = 0;
-                            newPlayerState.onGround = true;
-                        }
-                    } else {
-                         if (overlapX > 0) { // Collision from left
-                            newPlayerState.x = entity.x + entity.width;
-                        } else { // Collision from right
-                            newPlayerState.x = entity.x - PLAYER_WIDTH;
-                        }
-                    }
+            if (checkCollision(playerRect, entityRect)) {
+                // Vertical collision
+                if (y + PLAYER_HEIGHT <= entity.y && newY + PLAYER_HEIGHT > entity.y) {
+                    newY = entity.y - PLAYER_HEIGHT;
+                    vy = 0;
+                    onGround = true;
+                }
+                // Hitting head
+                else if (y >= entity.y + entity.height && newY < entity.y + entity.height) {
+                    newY = entity.y + entity.height;
+                    vy = 0;
+                }
+                 // Horizontal collision
+                else if (x + PLAYER_WIDTH <= entity.x && newX + PLAYER_WIDTH > entity.x) {
+                    newX = entity.x - PLAYER_WIDTH;
+                } else if (x >= entity.x + entity.width && newX < entity.x + entity.width) {
+                    newX = entity.x + entity.width;
                 }
             }
         });
         
-        // --- Invincibility Timer ---
-        if (newPlayerState.invincibleTimer > 0) {
-            newPlayerState.invincibleTimer -= 1;
-        } else if (newPlayerState.invincible) {
-            newPlayerState.invincible = false;
+        // Out of bounds check
+        if(newY > HEIGHT + 100) {
+            setLives(l => l - 1);
+            if(lives -1 <= 0) {
+                setGameState('lose');
+            } else {
+                return {...p, x: 50, y: 450, vx:0, vy:0};
+            }
+        }
+        
+        return { ...p, x: newX, y: newY, vx, vy, onGround, direction, isInvincible, invincibleTimer };
+    });
+    
+    // --- Enemy Logic ---
+    setEnemies(prevEnemies => prevEnemies.map(e => {
+        let { x, y, vx, direction, shootCooldown, health, patrolStart, patrolEnd } = e;
+        if(e.type === 'Mini-Virus') {
+            x += vx;
+            if (x < patrolStart) { x = patrolStart; vx = -vx; direction = 'right'; }
+            if (x + e.width > patrolEnd) { x = patrolEnd - e.width; vx = -vx; direction = 'left'; }
+        }
+        if(e.type === 'Spam-bot') {
+            const playerDist = Math.abs(player.x - x);
+            if(playerDist < 400 && shootCooldown <= 0) {
+                 setProjectiles(pr => [...pr, {id: Math.random(), x: e.x, y: e.y + 20, vx: player.x < x ? -5:5, owner: 'enemy'}]);
+                 shootCooldown = 120;
+            }
+            if(shootCooldown > 0) shootCooldown--;
+        }
+        if(e.type === 'The Adware King') {
+            if (player.x > 4200 && level.find(l => l.id === 999)?.active) {
+                if (direction === 'down') y += 1; else y -= 1;
+                if (y < patrolStart) direction = 'down';
+                if (y > patrolEnd) direction = 'up';
+                 if (shootCooldown <= 0) {
+                    setProjectiles(pr => [...pr, {id: Math.random(), x: e.x, y: e.y + 50, vx: -8, owner: 'enemy'}]);
+                    setProjectiles(pr => [...pr, {id: Math.random(), x: e.x, y: e.y + 50, vx: -6, owner: 'enemy'}]);
+                    shootCooldown = 90;
+                }
+                if (shootCooldown > 0) shootCooldown--;
+            }
         }
 
-        const takeDamage = () => {
-            if (newPlayerState.invincible) return;
-            newPlayerState.lives -= 1;
-            newPlayerState.invincible = true;
-            newPlayerState.invincibleTimer = 120; // 2 seconds of invincibility after hit
-            if (newPlayerState.lives <= 0) {
-                setGameState('dead');
-            }
-        };
+        return { ...e, x, y, vx, direction, shootCooldown, health };
+    }).filter(e => (e.health ?? 1) > 0));
 
-        // --- Enemy Logic and Collision ---
-        const newLevelEntities = levelEntities.map(entity => {
-            let newEntity = {...entity};
-            if (entity.type === 'enemy' || entity.type === 'boss' || entity.type === 'spambot') {
-                // Player-Enemy collision
-                if (newPlayerState.x < entity.x + entity.width &&
-                    newPlayerState.x + PLAYER_WIDTH > entity.x &&
-                    newPlayerState.y < entity.y + entity.height &&
-                    newPlayerState.y + PLAYER_HEIGHT > entity.y) {
-                    takeDamage();
-                }
-            }
+    // --- Projectiles Logic ---
+    setProjectiles(prev => prev.map(p => ({...p, x: p.x + p.vx})).filter(p => p.x > cameraX && p.x < cameraX + WIDTH));
+    
+    // --- Collision Detection ---
+    setPlayer(p => {
+        if(p.isInvincible) return p;
 
-            if (entity.type === 'enemy' && entity.variant === 'mini-virus') {
-                newEntity.x += newEntity.direction! * 2;
-                if (newEntity.x < newEntity.patrolStart! || newEntity.x + newEntity.width > newEntity.patrolEnd!) {
-                    newEntity.direction = -newEntity.direction!;
-                }
-            }
-            if (entity.type === 'spambot') {
-                 if (!spambotCooldowns.current[entity.id] && Math.abs((playerState.x + PLAYER_WIDTH/2) - (entity.x + entity.width/2)) < 400 ) {
-                    setEnemyProjectiles(prev => [...prev, {id: Date.now(), x: entity.x + entity.width/2, y: entity.y + entity.height / 2, vx: playerState.x < entity.x ? -PROJECTILE_SPEED/2 : PROJECTILE_SPEED/2, vy: 0}]);
-                    spambotCooldowns.current[entity.id] = true;
-                    setTimeout(() => { spambotCooldowns.current[entity.id] = false; }, 2000);
-                }
-            }
-            if (entity.type === 'boss') {
-                const playerCenterY = newPlayerState.y + PLAYER_HEIGHT / 2;
-                if (playerCenterY < newEntity.y + newEntity.height / 2) newEntity.y -= 1;
-                if (playerCenterY > newEntity.y + newEntity.height / 2) newEntity.y += 1;
-                
-                 if (!spambotCooldowns.current[entity.id]) {
-                    setEnemyProjectiles(prev => [...prev, {id: Date.now(), x: entity.x, y: entity.y + entity.height / 2, vx: -PROJECTILE_SPEED, vy: (Math.random() - 0.5) * 4}]);
-                    spambotCooldowns.current[entity.id] = true;
-                    setTimeout(() => { spambotCooldowns.current[entity.id] = false; }, 1500);
-                }
-            }
-            return newEntity;
-        }).filter(e => e.health === undefined || e.health > 0);
+        let playerHit = false;
         
-        // --- Projectile Logic ---
-        const updatedProjectiles = projectiles.map(p => ({...p, x: p.x + p.vx})).filter(p => p.x < LEVEL_WIDTH && p.x > 0);
-        const updatedEnemyProjectiles = enemyProjectiles.map(p => ({...p, x: p.x + p.vx})).filter(p => p.x < LEVEL_WIDTH && p.x > 0);
+        // Player vs Enemies
+        enemies.forEach(enemy => {
+            if(checkCollision({...p, width: PLAYER_WIDTH, height: PLAYER_HEIGHT}, enemy)) {
+                playerHit = true;
+            }
+        });
 
-        let projectilesToRemove: number[] = [];
-        let enemiesToRemove: number[] = [];
-        let bossDamage = 0;
+        // Player vs Projectiles
+        projectiles.forEach(proj => {
+            if(proj.owner === 'enemy' && checkCollision({...p, width: PLAYER_WIDTH, height: PLAYER_HEIGHT}, {...proj, width: 10, height: 10})) {
+                playerHit = true;
+                setProjectiles(pr => pr.filter(x => x.id !== proj.id));
+            }
+        });
+        
+        if (playerHit) {
+            if(p.hasShield) {
+                return {...p, hasShield: false, isInvincible: true, invincibleTimer: 120};
+            } else {
+                setLives(l => l-1);
+                if(lives-1 <= 0) setGameState('lose');
+                return {...p, x: 50, y: 450, vx: 0, vy: 0, isInvincible: true, invincibleTimer: 120};
+            }
+        }
+        return p;
+    });
 
-        updatedProjectiles.forEach(p => {
-            newLevelEntities.forEach(e => {
-                if ((e.type === 'enemy' || e.type === 'spambot' || e.type === 'boss') && p.x < e.x + e.width && p.x + 15 > e.x && p.y < e.y + e.height && p.y + 15 > e.y) {
-                    projectilesToRemove.push(p.id);
-                    if (e.type === 'boss') {
-                        bossDamage++;
-                    } else {
-                        enemiesToRemove.push(e.id);
-                    }
-                    setParticleEffects(prev => [...prev, { id: Date.now(), x: p.x, y: p.y }]);
+    // Projectile vs Enemies
+    projectiles.forEach(proj => {
+        if (proj.owner === 'player') {
+            enemies.forEach(enemy => {
+                if (checkCollision({ ...proj, width: 10, height: 10 }, enemy)) {
+                    createParticles(enemy.x + enemy.width / 2, enemy.y + enemy.height / 2);
+                    setProjectiles(pr => pr.filter(x => x.id !== proj.id));
+                    setEnemies(en => en.map(e => e.id === enemy.id ? {...e, health: (e.health ?? 1) - 1} : e));
                 }
             });
-        });
-        
-        updatedEnemyProjectiles.forEach(p => {
-             if (p.x < newPlayerState.x + PLAYER_WIDTH && p.x + 15 > newPlayerState.x && p.y < newPlayerState.y + PLAYER_HEIGHT && p.y + 15 > newPlayerState.y) {
-                projectilesToRemove.push(p.id);
-                takeDamage();
-            }
-        });
-        
-        const finalEntities = newLevelEntities.filter(e => !enemiesToRemove.includes(e.id)).map(e => {
-            if (e.type === 'boss' && bossDamage > 0) {
-                const newHealth = e.health! - bossDamage;
-                if (newHealth <= 0) {
-                    setGameState('levelComplete');
-                    return {...e, health: 0};
-                }
-                return {...e, health: newHealth};
-            }
-            return e;
-        });
+        }
+    });
 
-        setProjectiles(updatedProjectiles.filter(p => !projectilesToRemove.includes(p.id)));
-        setEnemyProjectiles(updatedEnemyProjectiles.filter(p => !projectilesToRemove.includes(p.id)));
-        setLevelEntities(finalEntities);
+    // --- Interactive Elements ---
+    setPlayer(p => {
+        const playerHead = { x: p.x, y: p.y - 1, width: PLAYER_WIDTH, height: 1 };
+        let updatedLevel = [...level];
+        let playerUpdated = {...p};
 
-        // --- Interactive Objects Logic ---
-        finalEntities.forEach(entity => {
-            if (entity.type === 'console' && !entity.activated) {
-                if (newPlayerState.x < entity.x + entity.width && newPlayerState.x + PLAYER_WIDTH > entity.x && keys['e']) {
-                    setLevelEntities(prev => prev.map(e => {
-                        if (e.id === entity.id) return {...e, activated: true};
-                        if (e.id === entity.linkedId) return {...e, activated: false};
-                        return e;
-                    }));
-                    checkAndTriggerMentorMessage(true, 6);
-                }
-            }
-            if (entity.type === 'log' && !entity.activated) {
-                 if (newPlayerState.x < entity.x + entity.width && newPlayerState.x + PLAYER_WIDTH > entity.x) {
-                     setLevelEntities(prev => prev.map(e => e.id === entity.id ? {...e, activated: true} : e));
-                     checkAndTriggerMentorMessage(true, 4);
+        updatedLevel.forEach(entity => {
+             // Power-up box
+            if (entity.type === 'power-up-box' && !entity.hit && p.vy < 0) {
+                 if(checkCollision(playerHead, entity)) {
+                     entity.hit = true;
+                     createParticles(entity.x + entity.width / 2, entity.y + entity.height / 2);
+                     const powerups = ['weapon', 'shield', 'invincibility', 'life'];
+                     const randomPowerup = powerups[Math.floor(Math.random() * powerups.length)];
+                     switch(randomPowerup) {
+                         case 'weapon': playerUpdated.hasWeapon = true; break;
+                         case 'shield': playerUpdated.hasShield = true; break;
+                         case 'invincibility': playerUpdated.isInvincible = true; playerUpdated.invincibleTimer = 300; break;
+                         case 'life': setLives(l => l + 1); break;
+                     }
                  }
             }
+            // Console
+            if (entity.type === 'console' && keysRef.current.e) {
+                 if (checkCollision({x:p.x,y:p.y, width: PLAYER_WIDTH, height: PLAYER_HEIGHT}, entity)) {
+                     const linkedFirewall = updatedLevel.find(f => f.id === entity.linkedElementId);
+                     if(linkedFirewall && linkedFirewall.type === 'firewall') {
+                         linkedFirewall.active = false;
+                         showMessage(mentorMessages[entity.id]);
+                     }
+                 }
+            }
+            // Log
+            if (entity.type === 'log' && !entity.collected) {
+                 if (checkCollision({x:p.x,y:p.y, width: PLAYER_WIDTH, height: PLAYER_HEIGHT}, entity)) {
+                     entity.collected = true;
+                     showMessage(mentorMessages[entity.id]);
+                 }
+            }
+             // Goal
+            if (entity.type === 'goal' && entity.active) {
+                if (checkCollision({x:p.x,y:p.y, width: PLAYER_WIDTH, height: PLAYER_HEIGHT}, entity)) {
+                    setGameState('win');
+                }
+            }
         });
+        
+        setLevel(updatedLevel);
+        return playerUpdated;
+    });
+    
+    if (player.x > 4200 && level.find(l => l.id === 999)?.active) {
+        showMessage(mentorMessages[999]);
+    }
 
-        // --- Update player state ---
-        setPlayerState(newPlayerState);
+    if (!enemies.some(e => e.type === 'The Adware King')) {
+        const goal = level.find(e => e.type === 'goal');
+        if (goal) goal.active = true;
+    }
 
-        // --- Update Camera ---
-        const targetCameraX = newPlayerState.x - GAME_WIDTH / 2;
-        const newCameraX = Math.max(0, Math.min(LEVEL_WIDTH - GAME_WIDTH, targetCameraX));
-        setCameraX(newCameraX);
 
-        // --- Mentor Messages ---
-        checkAndTriggerMentorMessage(newPlayerState.x > 50, 1);
-        checkAndTriggerMentorMessage(newPlayerState.x > 400, 2);
-        checkAndTriggerMentorMessage(newPlayerState.x > 200, 3);
-        checkAndTriggerMentorMessage(newPlayerState.x > 1600, 5);
-        checkAndTriggerMentorMessage(newPlayerState.x > BOSS_ARENA_START - 200, 7);
+    // --- Particles Logic ---
+    setParticles(prev => prev.map(p => ({
+        ...p,
+        x: p.x + p.vx,
+        y: p.y + p.vy,
+        opacity: p.opacity - 0.05,
+    })).filter(p => p.opacity > 0));
 
-         // --- Particle effects cleanup ---
-        if (particleEffects.length > 0) {
-            setTimeout(() => {
-                setParticleEffects(prev => prev.slice(1));
-            }, 500);
+    // --- Camera Logic ---
+    setCameraX(prev => {
+        const target = player.x - WIDTH / 2;
+        const newCamX = prev + (target - prev) * 0.1;
+        return Math.max(0, Math.min(LEVEL_WIDTH - WIDTH, newCamX));
+    });
+
+    gameLoopRef.current = requestAnimationFrame(gameLoop);
+  }, [gameState, player.x, lives, level, enemies, projectiles, cameraX, createParticles, showMessage]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => { keysRef.current[e.key] = true; };
+    const handleKeyUp = (e: KeyboardEvent) => {
+        keysRef.current[e.key] = false;
+        if (e.key === 'x' && player.hasWeapon) {
+            setProjectiles(prev => [...prev, {
+                id: Math.random(),
+                x: player.x + (player.direction === 'right' ? PLAYER_WIDTH : -10),
+                y: player.y + PLAYER_HEIGHT / 2,
+                vx: player.direction === 'right' ? 10 : -10,
+                owner: 'player'
+            }]);
         }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [player.hasWeapon, player.direction, player.x, player.y]);
 
-    }, [gameState, playerState, keys, levelEntities, projectiles, enemyProjectiles, checkAndTriggerMentorMessage, particleEffects.length]);
+  useEffect(() => {
+    if (gameState === 'playing') {
+      gameLoopRef.current = requestAnimationFrame(gameLoop);
+    }
+    return () => {
+      if (gameLoopRef.current) {
+        cancelAnimationFrame(gameLoopRef.current);
+      }
+    };
+  }, [gameState, gameLoop]);
+  
+  const StartScreen = () => (
+    <div className="absolute inset-0 bg-black bg-opacity-70 flex flex-col justify-center items-center text-white font-mono z-50">
+      <h1 className="text-5xl text-green-400 mb-4">Cyber Defender</h1>
+      <p className="text-xl mb-8">The Firewall Quest</p>
+      <button className="px-8 py-4 bg-green-500 text-black font-bold text-2xl border-2 border-green-300 hover:bg-green-400" onClick={resetGame}>Start Mission</button>
+    </div>
+  );
 
-    useGameLoop(gameLogic);
+  const EndScreen = ({ message, onRestart }: { message: string, onRestart: () => void }) => (
+    <div className="absolute inset-0 bg-black bg-opacity-70 flex flex-col justify-center items-center text-white font-mono z-50">
+      <h1 className="text-5xl text-red-500 mb-4">{message}</h1>
+      <button className="px-8 py-4 bg-red-500 text-black font-bold text-2xl border-2 border-red-300 hover:bg-red-400" onClick={onRestart}>Retry</button>
+    </div>
+  );
 
-    const boss = levelEntities.find(e => e.type === 'boss');
+  const GameScreen = ({ children, cameraX }: { children: React.ReactNode, cameraX: number }) => (
+      <div style={{ transform: `translateX(-${cameraX}px)`, width: LEVEL_WIDTH, height: HEIGHT, position: 'relative' }}>
+        {children}
+      </div>
+  )
 
-    const renderGameScreen = () => (
-        <div
-            className="relative w-full h-full overflow-hidden bg-black"
-            style={{ transform: `translateX(-${cameraX}px)` }}
-        >
-            <GameBackground cameraX={cameraX} />
-            <Player x={playerState.x} y={playerState.y} invincible={playerState.invincible} />
-            {levelEntities.map(entity => (
-                <LevelEntity key={entity.id} entity={entity} />
-            ))}
-            {projectiles.map(p => <ProjectileComponent key={p.id} projectile={p} />)}
-            {enemyProjectiles.map(p => <ProjectileComponent key={p.id} projectile={p} />)}
-            {particleEffects.map(p => <ParticleEffect key={p.id} x={p.x} y={p.y} />)}
-        </div>
-    );
+  const boss = enemies.find(e => e.type === 'The Adware King');
 
-    return (
-        <div className="w-screen h-screen flex justify-center items-center bg-gray-900">
-            <div
-                className="relative bg-gray-900 overflow-hidden"
-                style={{ width: GAME_WIDTH, height: GAME_HEIGHT }}
-            >
-                {gameState !== 'start' && (
-                    <UI 
-                        lives={playerState.lives} 
-                        hasShield={playerState.hasShield}
-                        hasWeapon={playerState.hasWeapon}
-                        invincible={playerState.invincible}
-                        message={currentMessage}
-                        bossHealth={boss ? boss.health! : null}
-                        bossMaxHealth={boss ? boss.maxHealth! : null}
-                    />
-                )}
-                
-                {gameState === 'start' && <StartScreen onStart={() => setGameState('playing')} />}
-                {gameState === 'playing' && renderGameScreen()}
-                {gameState === 'dead' && <EndScreen onRestart={resetGame} />}
-                {gameState === 'levelComplete' && <LevelCompleteScreen onRestart={resetGame} />}
+  return (
+    <>
+    <div style={{ width: WIDTH, height: HEIGHT, margin: '20px auto', overflow: 'hidden', position: 'relative', background: 'black', border: '2px solid #00ff00' }}>
+      {gameState === 'start' && <StartScreen />}
+      {gameState === 'lose' && <EndScreen message="SYSTEM FAILURE" onRestart={resetGame} />}
+      {gameState === 'win' && <EndScreen message="SECTOR CLEARED" onRestart={resetGame} />}
 
+      {gameState === 'playing' && (
+        <>
+        <Background />
+        <UI lives={lives} message={message}/>
+        {/* FIX: Wrapped children in a React Fragment to resolve a potential typing issue. */}
+        <GameScreen cameraX={cameraX}>
+            <>
+                {level.map(e => <LevelEntity key={e.id} entity={e} />)}
+                {enemies.map(e => <Enemy key={e.id} enemy={e} />)}
+                <Player player={player} />
+                {projectiles.map(p => <ProjectileComponent key={p.id} projectile={p} />)}
+                {particles.map(p => <ParticleComponent key={p.id} particle={p} />)}
+            </>
+        </GameScreen>
+        {boss && (
+            <div style={{ position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)', width: '50%', background: '#333', border: '1px solid red' }}>
+                <div style={{ height: 20, width: `${(boss.health! / boss.maxHealth!) * 100}%`, background: 'red' }} />
             </div>
-        </div>
-    );
-};
-
-interface GameScreenProps {
-  cameraX: number;
-  children: React.ReactNode;
+        )}
+        </>
+      )}
+    </div>
+    <style>{`
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        @keyframes firewall-flicker {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
+        }
+        @keyframes blinking {
+            0%, 100% { opacity: 0; }
+            50% { opacity: 1; }
+        }
+        .scanline {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.5) 50%, rgba(0,0,0,0) 100%);
+            background-size: 100% 4px;
+            animation: scan 10s linear infinite;
+            pointer-events: none;
+        }
+        .grid-bg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 200%;
+            height: 200%;
+            background-image:
+                linear-gradient(to right, rgba(0, 255, 255, 0.1) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(0, 255, 255, 0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            animation: move-grid 20s linear infinite;
+        }
+        @keyframes scan {
+            from { background-position: 0 0; }
+            to { background-position: 0 -600px; }
+        }
+        @keyframes move-grid {
+             from { transform: translate(0, 0); }
+             to { transform: translate(-50px, -50px); }
+        }
+    `}</style>
+    </>
+  );
 }
-
-const GameScreen: React.FC<GameScreenProps> = ({ cameraX, children }) => (
-  <div
-    className="relative w-full h-full overflow-hidden bg-black"
-    style={{
-      width: `${LEVEL_WIDTH}px`,
-      transform: `translateX(-${cameraX}px)`,
-    }}
-  >
-    {children}
-  </div>
-);
-
-export default App;
