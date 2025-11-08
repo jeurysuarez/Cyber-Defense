@@ -1,0 +1,7 @@
+{
+  "name": "Cyber Defender: The Firewall Quest",
+  "description": "A 2D platformer where you play as a cybersecurity agent cleaning a system infected by malware.",
+  "version": "1.0.0",
+  "author": "AI",
+  "requestFramePermissions": []
+}
